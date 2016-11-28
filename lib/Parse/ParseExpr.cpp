@@ -110,7 +110,7 @@ using namespace clang;
 /// [C++]   throw-expression [C++ 15]
 ///
 ///       assignment-operator: one of
-///         = *= /= %= += -= <<= >>= &= ^= |=
+///         = *= /= %= += -= <<= >>= &= ^= |= [= _Cilk_spawn]
 ///
 ///       expression: [C99 6.5.17]
 ///         assignment-expression ...[opt]
@@ -250,6 +250,8 @@ Parser::ParseRHSOfBinaryExpression(ExprResult LHS, prec::Level MinPrec) {
                                                GreaterThanIsOperator,
                                                getLangOpts().CPlusPlus11);
   SourceLocation ColonLoc;
+
+  bool isSpawning = false;
 
   while (1) {
     // If this token has a lower precedence than we are allowed to parse (e.g.
@@ -1337,6 +1339,22 @@ ExprResult Parser::ParseCastExpression(bool isUnaryExpression,
     cutOffParsing();
     return ExprError();
   }
+  /*
+  // postfix-expression: [CP]
+  //   _Cilk_spawn[opt] postfix-expression '(' argument-expression-list[opt] ')'
+  case tok::kw__Cilk_spawn: {
+    SourceLocation SpawnLoc = ConsumeToken();
+    if (!getLangOpts().CilkPlus) {
+      Diag(SpawnLoc, diag::err_cilkplus_disable);
+      SkipUntil(tok::semi, StopAtSemi | StopBeforeMatch);
+      return ExprError();
+    }
+
+    Res = ParseCastExpression(false);
+    if (Res.isInvalid()) return ExprError();
+    return Actions.ActOnCilkSpawnCall(SpawnLoc, Res.get());
+  }
+  */
   case tok::l_square:
     if (getLangOpts().CPlusPlus11) {
       if (getLangOpts().ObjC1) {

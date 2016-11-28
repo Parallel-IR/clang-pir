@@ -446,6 +446,8 @@ void DarwinClang::AddLinkRuntimeLibArgs(const ArgList &Args,
     AddLinkSanitizerLibArgs(Args, CmdArgs, "ubsan");
   if (Sanitize.needsTsanRt())
     AddLinkSanitizerLibArgs(Args, CmdArgs, "tsan");
+  if (Sanitize.needsCilksanRt())
+    AddLinkSanitizerLibArgs(Args, CmdArgs, "cilk");
   if (Sanitize.needsStatsRt()) {
     StringRef OS = isTargetMacOS() ? "osx" : "iossim";
     AddLinkRuntimeLib(Args, CmdArgs,
@@ -1293,11 +1295,15 @@ SanitizerMask Darwin::getSupportedSanitizers() const {
     if (!isMacosxVersionLT(10, 9))
       Res |= SanitizerKind::Vptr;
     Res |= SanitizerKind::SafeStack;
-    if (IsX86_64)
+    if (IsX86_64) {
       Res |= SanitizerKind::Thread;
+      Res |= SanitizerKind::Cilk;
+    }
   } else if (isTargetIOSSimulator() || isTargetTvOSSimulator()) {
-    if (IsX86_64)
+    if (IsX86_64) {
       Res |= SanitizerKind::Thread;
+      Res |= SanitizerKind::Cilk;
+    }
   }
   return Res;
 }
@@ -3694,6 +3700,7 @@ SanitizerMask FreeBSD::getSupportedSanitizers() const {
   if (IsX86_64 || IsMIPS64) {
     Res |= SanitizerKind::Leak;
     Res |= SanitizerKind::Thread;
+    Res |= SanitizerKind::Cilk;
   }
   if (IsX86 || IsX86_64) {
     Res |= SanitizerKind::SafeStack;
@@ -4848,8 +4855,10 @@ SanitizerMask Linux::getSupportedSanitizers() const {
     Res |= SanitizerKind::DataFlow;
   if (IsX86_64 || IsMIPS64 || IsAArch64)
     Res |= SanitizerKind::Leak;
-  if (IsX86_64 || IsMIPS64 || IsAArch64 || IsPowerPC64)
+  if (IsX86_64 || IsMIPS64 || IsAArch64 || IsPowerPC64) {
     Res |= SanitizerKind::Thread;
+    Res |= SanitizerKind::Cilk;
+  }
   if (IsX86_64 || IsMIPS64 || IsPowerPC64 || IsAArch64)
     Res |= SanitizerKind::Memory;
   if (IsX86_64 || IsMIPS64)

@@ -92,6 +92,7 @@ void CodeGenFunction::EmitStmt(const Stmt *S) {
   case Stmt::DefaultStmtClass:
   case Stmt::CaseStmtClass:
   case Stmt::SEHLeaveStmtClass:
+  case Stmt::CilkSyncStmtClass:
     llvm_unreachable("should have emitted these statements as simple");
 
 #define STMT(Type, Base)
@@ -152,6 +153,10 @@ void CodeGenFunction::EmitStmt(const Stmt *S) {
     EmitCapturedStmt(*CS, CS->getCapturedRegionKind());
     }
     break;
+  case Stmt::CilkSpawnStmtClass:
+                              EmitCilkSpawnStmt(cast<CilkSpawnStmt>(*S)); break;
+  case Stmt::CilkForStmtClass:
+                              EmitCilkForStmt(cast<CilkForStmt>(*S)); break;
   case Stmt::ObjCAtTryStmtClass:
     EmitObjCAtTryStmt(cast<ObjCAtTryStmt>(*S));
     break;
@@ -325,9 +330,24 @@ bool CodeGenFunction::EmitSimpleStmt(const Stmt *S) {
   case Stmt::DefaultStmtClass:  EmitDefaultStmt(cast<DefaultStmt>(*S));   break;
   case Stmt::CaseStmtClass:     EmitCaseStmt(cast<CaseStmt>(*S));         break;
   case Stmt::SEHLeaveStmtClass: EmitSEHLeaveStmt(cast<SEHLeaveStmt>(*S)); break;
+  case Stmt::CilkSyncStmtClass: EmitCilkSyncStmt(cast<CilkSyncStmt>(*S)); break;
   }
 
   return true;
+}
+
+/// EmitCilkSyncStmt - Emit a _Cilk_sync node.
+void CodeGenFunction::EmitCilkSyncStmt(const CilkSyncStmt &S) {
+  llvm::BasicBlock *ContinueBlock = createBasicBlock("sync.continue");
+
+  // If this code is reachable then emit a stop point (if generating
+  // debug info). We have to do this ourselves because we are on the
+  // "simple" statement path.
+  if (HaveInsertPoint())
+    EmitStopPoint(&S);
+
+  Builder.CreateSync(ContinueBlock);
+  EmitBlock(ContinueBlock);
 }
 
 /// EmitCompoundStmt - Emit a compound statement {..} node.  If GetLast is true,
@@ -541,6 +561,9 @@ void CodeGenFunction::EmitAttributedStmt(const AttributedStmt &S) {
     break;
   case Stmt::CXXForRangeStmtClass:
     EmitCXXForRangeStmt(cast<CXXForRangeStmt>(*SubStmt), S.getAttrs());
+    break;
+  case Stmt::CilkForStmtClass:
+    EmitCilkForStmt(cast<CilkForStmt>(*SubStmt), S.getAttrs());
     break;
   default:
     EmitStmt(SubStmt);
@@ -1066,6 +1089,205 @@ void CodeGenFunction::EmitReturnStmt(const ReturnStmt &S) {
 
   cleanupScope.ForceCleanup();
   EmitBranchThroughCleanup(ReturnBlock);
+}
+
+void CodeGenFunction::EmitCilkSpawnStmt(const CilkSpawnStmt &S) {
+
+  llvm::BasicBlock *DetachedBlock = createBasicBlock("det.achd");
+  llvm::BasicBlock *ContinueBlock = createBasicBlock("det.cont");
+
+  // Handle spawning of calls in a special manner, to evaluate
+  // arguments before spawn.
+  const CallExpr* callExpr = nullptr;
+  llvm::CallInst* finalInst = nullptr;
+  if ((callExpr = dyn_cast_or_null<CallExpr>(S.getSpawnedStmt()))) {
+    // Remember the block we came in on.
+    llvm::BasicBlock *incoming = Builder.GetInsertBlock();
+    assert(incoming && "expression emission must have an insertion point");
+
+    EmitIgnoredExpr(callExpr);
+
+    llvm::BasicBlock *outgoing = Builder.GetInsertBlock();
+    assert(outgoing && "expression emission cleared block!");
+
+    // The expression emitters assume (reasonably!) that the insertion
+    // point is always set.  To maintain that, the call-emission code
+    // for noreturn functions has to enter a new block with no
+    // predecessors.  We want to kill that block and mark the current
+    // insertion point unreachable in the common case of a call like
+    // "exit();".  Since expression emission doesn't otherwise create
+    // blocks with no predecessors, we can just test for that.
+    // However, we must be careful not to do this to our incoming
+    // block, because *statement* emission does sometimes create
+    // reachable blocks which will have no predecessors until later in
+    // the function.  This occurs with, e.g., labels that are not
+    // reachable by fallthrough.
+    if (incoming != outgoing && outgoing->use_empty()) {
+      outgoing->eraseFromParent();
+      Builder.ClearInsertionPoint();
+    }
+    finalInst = dyn_cast<llvm::CallInst>(&outgoing->back());
+    assert(finalInst);
+  }
+
+  // Otherwise, we assume that the programmer dealt with races
+  // correctly.
+  Builder.CreateDetach(DetachedBlock, ContinueBlock);
+
+  auto temp = AllocaInsertPt;
+  llvm::Value *Undef = llvm::UndefValue::get(Int32Ty);
+  AllocaInsertPt = new llvm::BitCastInst(Undef, Int32Ty, "", DetachedBlock);
+//  if (Builder.isNamePreserving())
+//    AllocaInsertPt->setName("detallocapt");
+
+  EmitBlock(DetachedBlock);
+  // Emit the spawned statement
+  if (finalInst) {
+    DetachedBlock->getInstList().splice(DetachedBlock->begin(), finalInst->getParent()->getInstList(), finalInst->getIterator());
+  } else {
+    EmitStmt(S.getSpawnedStmt());
+  }
+  // }
+  // The CFG path into the spawned statement should terminate with a
+  // `reattach'.
+  Builder.CreateReattach(ContinueBlock);
+
+  AllocaInsertPt = temp;
+
+  // Now emit the parent block
+  EmitBlock(ContinueBlock);
+}
+
+void CodeGenFunction::EmitCilkForStmt(const CilkForStmt &S,
+                                      ArrayRef<const Attr *> ForAttrs) {
+  JumpDest LoopExit = getJumpDestInCurrentScope("pfor.end");
+
+  LexicalScope ForScope(*this, S.getSourceRange());
+
+  // Evaluate the first part before the loop.
+  if (S.getInit())
+    EmitStmt(S.getInit());
+
+  // Emit any declarations created for evaluating the loop condition.
+  if (S.getCondDecl())
+    EmitStmt(S.getCondDecl());
+
+  const Expr *Cond = S.getCond();
+  assert(Cond && "_Cilk_for loop has no condition");
+
+  // Start the loop with a block that tests the condition.
+  // If there's an increment, the continue scope will be overwritten
+  // later.
+  JumpDest Continue = getJumpDestInCurrentScope("pfor.cond");
+  llvm::BasicBlock *CondBlock = Continue.getBlock();
+  EmitBlock(CondBlock);
+
+  LoopStack.setSpawnStrategy(LoopAttributes::DAC);
+  const SourceRange &R = S.getSourceRange();
+  LoopStack.push(CondBlock, CGM.getContext(), ForAttrs,
+                 SourceLocToDebugLoc(R.getBegin()),
+                 SourceLocToDebugLoc(R.getEnd()));
+
+  const Expr *Inc = S.getInc();
+  assert(Inc && "_Cilk_for loop has no increment");
+  //llvm::BasicBlock *Preattach = createBasicBlock("pfor.preattach");
+  //llvm::errs() << (void*) Preattach << "\n";
+  JumpDest Preattach = getJumpDestInCurrentScope("pfor.preattach");
+  Continue = getJumpDestInCurrentScope("pfor.inc");
+
+  // Store the blocks to use for break and continue.
+  BreakContinueStack.push_back(BreakContinue(Preattach, Preattach));
+
+  // Create a cleanup scope for the condition variable cleanups.
+  LexicalScope ConditionScope(*this, S.getSourceRange());
+
+  auto temp = AllocaInsertPt;
+
+  llvm::BasicBlock *SyncContinueBlock = createBasicBlock("pfor.end.continue");
+  bool madeSync = false;
+  {
+    // // If the for statement has a condition scope, emit the local variable
+    // // declaration.
+    // if (S.getConditionVariable()) {
+    //   EmitAutoVarDecl(*S.getConditionVariable());
+    // }
+
+    llvm::BasicBlock *ExitBlock = LoopExit.getBlock();
+    // If there are any cleanups between here and the loop-exit scope,
+    // create a block to stage a loop exit along.
+    if (ForScope.requiresCleanups())
+      ExitBlock = createBasicBlock("pfor.cond.cleanup");
+
+    // As long as the condition is true, iterate the loop.
+    llvm::BasicBlock *DetachBlock = createBasicBlock("pfor.detach");
+    llvm::BasicBlock *ForBody = createBasicBlock("pfor.body");
+
+    // C99 6.8.5p2/p4: The first substatement is executed if the expression
+    // compares unequal to 0.  The condition must be a scalar type.
+    llvm::Value *BoolCondVal = EvaluateExprAsBool(S.getCond());
+    Builder.CreateCondBr(
+        BoolCondVal, DetachBlock, ExitBlock,
+        createProfileWeightsForLoop(S.getCond(), getProfileCount(S.getBody())));
+
+    if (ExitBlock != LoopExit.getBlock()) {
+      EmitBlock(ExitBlock);
+      Builder.CreateSync(SyncContinueBlock);
+      EmitBlock(SyncContinueBlock);
+      madeSync = true;
+      EmitBranchThroughCleanup(LoopExit);
+    }
+
+    EmitBlock(DetachBlock);
+    Builder.CreateDetach(ForBody, Continue.getBlock());
+
+
+  llvm::Value *Undef = llvm::UndefValue::get(Int32Ty);
+  AllocaInsertPt = new llvm::BitCastInst(Undef, Int32Ty, "", ForBody);
+//  if (Builder.isNamePreserving())
+//    AllocaInsertPt->setName("detallocapt");
+
+
+    EmitBlock(ForBody);
+  }
+
+  incrementProfileCounter(&S);
+
+  {
+    // Create a separate cleanup scope for the body, in case it is not
+    // a compound statement.
+    RunCleanupsScope BodyScope(*this);
+    EmitStmt(S.getBody());
+    Builder.CreateBr(Preattach.getBlock());
+  }
+
+  {
+    EmitBlock(Preattach.getBlock());
+    Builder.CreateReattach(Continue.getBlock());
+
+    //AllocaInsertPt->eraseFromParent();
+    AllocaInsertPt = temp;
+  }
+
+  // Emit the increment next.
+  EmitBlock(Continue.getBlock());
+  EmitStmt(Inc);
+
+  BreakContinueStack.pop_back();
+
+  ConditionScope.ForceCleanup();
+
+  EmitStopPoint(&S);
+  EmitBranch(CondBlock);
+
+  ForScope.ForceCleanup();
+
+  LoopStack.pop();
+  // Emit the fall-through block.
+  EmitBlock(LoopExit.getBlock(), true);
+  if (!madeSync) {
+    Builder.CreateSync(SyncContinueBlock);
+    EmitBlock(SyncContinueBlock);
+  }
 }
 
 void CodeGenFunction::EmitDeclStmt(const DeclStmt &S) {

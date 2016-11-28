@@ -3171,7 +3171,10 @@ static void addSanitizerRuntime(const ToolChain &TC, const ArgList &Args,
   // Wrap any static runtimes that must be forced into executable in
   // whole-archive.
   if (IsWhole) CmdArgs.push_back("-whole-archive");
-  CmdArgs.push_back(TC.getCompilerRTArgString(Args, Sanitizer, IsShared));
+  if (Sanitizer=="cilk")
+    CmdArgs.push_back("-lcilksan");
+  else
+    CmdArgs.push_back(TC.getCompilerRTArgString(Args, Sanitizer, IsShared));
   if (IsWhole) CmdArgs.push_back("-no-whole-archive");
 }
 
@@ -3248,6 +3251,9 @@ collectSanitizerRuntimes(const ToolChain &TC, const ArgList &Args,
     StaticRuntimes.push_back("tsan");
     if (SanArgs.linkCXXRuntimes())
       StaticRuntimes.push_back("tsan_cxx");
+  }
+  if (SanArgs.needsCilksanRt()) {
+    StaticRuntimes.push_back("cilk");
   }
   if (SanArgs.needsUbsanRt()) {
     StaticRuntimes.push_back("ubsan_standalone");
@@ -5275,6 +5281,15 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   }
   Args.AddLastArg(CmdArgs, options::OPT_fdiagnostics_show_template_tree);
   Args.AddLastArg(CmdArgs, options::OPT_fno_elide_type);
+  Args.AddLastArg(CmdArgs, options::OPT_fcilkplus);
+  Args.AddLastArg(CmdArgs, options::OPT_fdetach);
+  Args.AddLastArg(CmdArgs, options::OPT_ftapir);
+
+  if (Args.hasArg(options::OPT_fcilkplus) || Args.hasArg(options::OPT_ftapir) || Args.hasArg(options::OPT_fdetach) )
+    if (getToolChain().getTriple().getOS() != llvm::Triple::Linux &&
+        getToolChain().getTriple().getOS() != llvm::Triple::UnknownOS &&
+        !getToolChain().getTriple().isMacOSX())
+      D.Diag(diag::err_drv_cilk_unsupported);
 
   // Forward flags for OpenMP. We don't do this if the current action is an
   // device offloading action other than OpenMP.
@@ -5309,6 +5324,10 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 
   const SanitizerArgs &Sanitize = getToolChain().getSanitizerArgs();
   Sanitize.addArgs(getToolChain(), Args, CmdArgs, InputType);
+
+  if (Args.hasArg(options::OPT_fcsi)) {
+    Args.AddLastArg(CmdArgs, options::OPT_fcsi);
+  }
 
   // Report an error for -faltivec on anything other than PowerPC.
   if (const Arg *A = Args.getLastArg(options::OPT_faltivec)) {
@@ -8050,6 +8069,9 @@ void cloudabi::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
   AddLinkerInputs(ToolChain, Inputs, Args, CmdArgs, JA);
 
+  if (Args.hasArg(options::OPT_fcilkplus) || Args.hasArg(options::OPT_ftapir) || Args.hasArg(options::OPT_fdetach) )
+    CmdArgs.push_back("-lcilkrts");
+
   if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs)) {
     if (D.CCCIsCXX())
       ToolChain.AddCXXStdlibLibArgs(Args, CmdArgs);
@@ -8464,6 +8486,9 @@ void darwin::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
   Args.AddAllArgs(CmdArgs, options::OPT_L);
 
+  if (Args.hasArg(options::OPT_fcilkplus) || Args.hasArg(options::OPT_ftapir) || Args.hasArg(options::OPT_fdetach) )
+    CmdArgs.push_back("-lcilkrts");
+
   AddLinkerInputs(getToolChain(), Inputs, Args, CmdArgs, JA);
   // Build the input file for -filelist (list of linker input files) in case we
   // need it later
@@ -8690,6 +8715,10 @@ void solaris::Linker::ConstructJob(Compilation &C, const JobAction &JA,
                             options::OPT_e, options::OPT_r});
 
   AddLinkerInputs(getToolChain(), Inputs, Args, CmdArgs, JA);
+
+  if (Args.hasArg(options::OPT_fcilkplus) || Args.hasArg(options::OPT_ftapir) || Args.hasArg(options::OPT_fdetach) )
+
+    CmdArgs.push_back("-lcilkrts");
 
   if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs)) {
     if (getToolChain().getDriver().CCCIsCXX())
@@ -10097,6 +10126,10 @@ void gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   // The profile runtime also needs access to system libraries.
   getToolChain().addProfileRTLibs(Args, CmdArgs);
 
+  if (Args.hasArg(options::OPT_fcilkplus) || Args.hasArg(options::OPT_ftapir) || Args.hasArg(options::OPT_fdetach) )
+
+    CmdArgs.push_back("-lcilkrts");
+
   if (D.CCCIsCXX() &&
       !Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs)) {
     bool OnlyLibstdcxxStatic = Args.hasArg(options::OPT_static_libstdcxx) &&
@@ -10310,6 +10343,10 @@ void nacltools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("--no-demangle");
 
   AddLinkerInputs(ToolChain, Inputs, Args, CmdArgs, JA);
+
+  if (Args.hasArg(options::OPT_fcilkplus) || Args.hasArg(options::OPT_ftapir) || Args.hasArg(options::OPT_fdetach) )
+
+    CmdArgs.push_back("-lcilkrts");
 
   if (D.CCCIsCXX() &&
       !Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs)) {
@@ -10531,6 +10568,10 @@ void minix::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
   getToolChain().addProfileRTLibs(Args, CmdArgs);
 
+  if (Args.hasArg(options::OPT_fcilkplus) || Args.hasArg(options::OPT_ftapir) || Args.hasArg(options::OPT_fdetach) )
+
+    CmdArgs.push_back("-lcilkrts");
+
   if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs)) {
     if (D.CCCIsCXX()) {
       getToolChain().AddCXXStdlibLibArgs(Args, CmdArgs);
@@ -10649,6 +10690,10 @@ void dragonfly::Linker::ConstructJob(Compilation &C, const JobAction &JA,
                   {options::OPT_L, options::OPT_T_Group, options::OPT_e});
 
   AddLinkerInputs(getToolChain(), Inputs, Args, CmdArgs, JA);
+
+  if (Args.hasArg(options::OPT_fcilkplus) || Args.hasArg(options::OPT_ftapir) || Args.hasArg(options::OPT_fdetach) )
+
+    CmdArgs.push_back("-lcilkrts");
 
   if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs)) {
     CmdArgs.push_back("-L/usr/lib/gcc50");
@@ -11189,6 +11234,10 @@ void MinGW::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   TC.AddFilePathLibArgs(Args, CmdArgs);
   AddLinkerInputs(TC, Inputs, Args, CmdArgs, JA);
 
+  if (Args.hasArg(options::OPT_fcilkplus) || Args.hasArg(options::OPT_ftapir) || Args.hasArg(options::OPT_fdetach) )
+
+    CmdArgs.push_back("-lcilkrts");
+
   // TODO: Add ASan stuff here
 
   // TODO: Add profile stuff here
@@ -11478,6 +11527,10 @@ void CrossWindows::Linker::ConstructJob(Compilation &C, const JobAction &JA,
       CmdArgs.push_back("-Bdynamic");
   }
 
+  if (Args.hasArg(options::OPT_fcilkplus) || Args.hasArg(options::OPT_ftapir) || Args.hasArg(options::OPT_fdetach) )
+
+    CmdArgs.push_back("-lcilkrts");
+
   if (!Args.hasArg(options::OPT_nostdlib)) {
     if (!Args.hasArg(options::OPT_nodefaultlibs)) {
       // TODO handle /MT[d] /MD[d]
@@ -11653,6 +11706,10 @@ void tools::Myriad::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   bool NeedsSanitizerDeps = addSanitizerRuntimes(TC, Args, CmdArgs);
   AddLinkerInputs(getToolChain(), Inputs, Args, CmdArgs, JA);
 
+  if (Args.hasArg(options::OPT_fcilkplus) || Args.hasArg(options::OPT_ftapir) || Args.hasArg(options::OPT_fdetach) )
+
+    CmdArgs.push_back("-lcilkrts");
+
   if (UseDefaultLibs) {
     if (NeedsSanitizerDeps)
       linkSanitizerRuntimeDeps(TC, CmdArgs);
@@ -11770,6 +11827,10 @@ static void ConstructPS4LinkJob(const Tool &T, Compilation &C,
 
   AddLinkerInputs(ToolChain, Inputs, Args, CmdArgs, JA);
 
+  if (Args.hasArg(options::OPT_fcilkplus) || Args.hasArg(options::OPT_ftapir) || Args.hasArg(options::OPT_fdetach) )
+
+    CmdArgs.push_back("-lcilkrts");
+
   if (Args.hasArg(options::OPT_pthread)) {
     CmdArgs.push_back("-lpthread");
   }
@@ -11865,6 +11926,10 @@ static void ConstructGoldLinkJob(const Tool &T, Compilation &C,
     CmdArgs.push_back("--no-demangle");
 
   AddLinkerInputs(ToolChain, Inputs, Args, CmdArgs, JA);
+
+  if (Args.hasArg(options::OPT_fcilkplus) || Args.hasArg(options::OPT_ftapir) || Args.hasArg(options::OPT_fdetach) )
+
+    CmdArgs.push_back("-lcilkrts");
 
   if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs)) {
     // For PS4, we always want to pass libm, libstdc++ and libkernel

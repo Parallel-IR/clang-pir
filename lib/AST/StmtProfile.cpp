@@ -1235,6 +1235,18 @@ void StmtProfiler::VisitAsTypeExpr(const AsTypeExpr *S) {
   VisitExpr(S);
 }
 
+void StmtProfiler::VisitCilkSpawnStmt(const CilkSpawnStmt *S) {
+  VisitStmt(S);
+}
+
+void StmtProfiler::VisitCilkSyncStmt(const CilkSyncStmt *S) {
+  VisitStmt(S);
+}
+
+void StmtProfiler::VisitCilkForStmt(const CilkForStmt *S) {
+  VisitStmt(S);
+}
+
 void StmtProfiler::VisitCXXNamedCastExpr(const CXXNamedCastExpr *S) {
   VisitExplicitCastExpr(S);
 }

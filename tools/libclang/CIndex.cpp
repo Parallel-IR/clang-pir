@@ -4934,6 +4934,12 @@ CXString clang_getCursorKindSpelling(enum CXCursorKind Kind) {
       return cxstring::createRef("TypeAliasTemplateDecl");
   case CXCursor_StaticAssert:
       return cxstring::createRef("StaticAssert");
+  case CXCursor_CilkSpawnStmt:
+    return cxstring::createRef("CilkSpawnStmt");
+  case CXCursor_CilkSyncStmt:
+    return cxstring::createRef("CilkSyncStmt");
+  case CXCursor_CilkForStmt:
+    return cxstring::createRef("CilkForStmt");
   case CXCursor_FriendDecl:
     return cxstring::createRef("FriendDecl");
   }

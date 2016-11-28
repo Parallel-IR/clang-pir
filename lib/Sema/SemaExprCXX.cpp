@@ -4416,12 +4416,9 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, TypeTrait UTT,
         // A template constructor is never a copy constructor.
         // FIXME: However, it may actually be selected at the actual overload
         // resolution point.
-        if (isa<FunctionTemplateDecl>(ND->getUnderlyingDecl()))
+        if (isa<FunctionTemplateDecl>(ND))
           continue;
-        // UsingDecl itself is not a constructor
-        if (isa<UsingDecl>(ND))
-          continue;
-        auto *Constructor = cast<CXXConstructorDecl>(ND->getUnderlyingDecl());
+        const CXXConstructorDecl *Constructor = cast<CXXConstructorDecl>(ND);
         if (Constructor->isCopyConstructor(FoundTQs)) {
           FoundConstructor = true;
           const FunctionProtoType *CPT
@@ -4455,12 +4452,9 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, TypeTrait UTT,
       bool FoundConstructor = false;
       for (const auto *ND : Self.LookupConstructors(RD)) {
         // FIXME: In C++0x, a constructor template can be a default constructor.
-        if (isa<FunctionTemplateDecl>(ND->getUnderlyingDecl()))
+        if (isa<FunctionTemplateDecl>(ND))
           continue;
-        // UsingDecl itself is not a constructor
-        if (isa<UsingDecl>(ND))
-          continue;
-        auto *Constructor = cast<CXXConstructorDecl>(ND->getUnderlyingDecl());
+        const CXXConstructorDecl *Constructor = cast<CXXConstructorDecl>(ND);
         if (Constructor->isDefaultConstructor()) {
           FoundConstructor = true;
           const FunctionProtoType *CPT
