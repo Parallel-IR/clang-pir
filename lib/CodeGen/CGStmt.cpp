@@ -840,8 +840,11 @@ void CodeGenFunction::EmitForStmt(const ForStmt &S,
   LexicalScope ForScope(*this, S.getSourceRange());
 
   // Evaluate the first part before the loop.
-  if (S.getInit())
+  if (S.getInit()) {
+    llvm::errs() << "---------------\n";
+    S.getInit()->dump();
     EmitStmt(S.getInit());
+  }
 
   // Start the loop with a block that tests the condition.
   // If there's an increment, the continue scope will be overwritten

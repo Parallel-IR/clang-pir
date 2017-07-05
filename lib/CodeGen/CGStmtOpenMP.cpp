@@ -1249,6 +1249,7 @@ static void emitCommonOMPParallelDirective(CodeGenFunction &CGF,
   const CapturedStmt *CS = S.getCapturedStmt(OMPD_parallel);
   auto OutlinedFn = CGF.CGM.getOpenMPRuntime().emitParallelOutlinedFunction(
       S, *CS->getCapturedDecl()->param_begin(), InnermostKind, CodeGen);
+  OutlinedFn->dump();
   if (const auto *NumThreadsClause = S.getSingleClause<OMPNumThreadsClause>()) {
     CodeGenFunction::RunCleanupsScope NumThreadsScope(CGF);
     auto NumThreads = CGF.EmitScalarExpr(NumThreadsClause->getNumThreads(),
@@ -1277,29 +1278,43 @@ static void emitCommonOMPParallelDirective(CodeGenFunction &CGF,
                                               CapturedVars, IfCond);
 }
 
+bool CodeGenFunction::CheckOMPParallelRegionForm(const OMPParallelDirective &S) {
+  const auto &Parents = getContext().getParents(S);
+  const auto &GrandParents = getContext().getParents(Parents[0]);
+
+  GrandParents[0].get<Stmt>()->dump();
+
+  return true;
+}
+
 void CodeGenFunction::EmitOMPParallelDirective(const OMPParallelDirective &S) {
-  // Emit parallel region as a standalone region.
-  auto &&CodeGen = [&S](CodeGenFunction &CGF, PrePostActionTy &) {
-    OMPPrivateScope PrivateScope(CGF);
-    bool Copyins = CGF.EmitOMPCopyinClause(S);
-    (void)CGF.EmitOMPFirstprivateClause(S, PrivateScope);
-    if (Copyins) {
-      // Emit implicit barrier to synchronize threads and avoid data races on
-      // propagation master's thread values of threadprivate variables to local
-      // instances of that variables of all other implicit threads.
-      CGF.CGM.getOpenMPRuntime().emitBarrierCall(
-          CGF, S.getLocStart(), OMPD_unknown, /*EmitChecks=*/false,
-          /*ForceSimpleCall=*/true);
-    }
-    CGF.EmitOMPPrivateClause(S, PrivateScope);
-    CGF.EmitOMPReductionClauseInit(S, PrivateScope);
-    (void)PrivateScope.Privatize();
-    CGF.EmitStmt(cast<CapturedStmt>(S.getAssociatedStmt())->getCapturedStmt());
-    CGF.EmitOMPReductionClauseFinal(S);
-  };
-  emitCommonOMPParallelDirective(*this, S, OMPD_parallel, CodeGen);
-  emitPostUpdateForReductionClause(
-      *this, S, [](CodeGenFunction &) -> llvm::Value * { return nullptr; });
+  if (CheckOMPParallelRegionForm(S)) {
+
+  } else {
+    // Emit parallel region as a standalone region.
+    auto &&CodeGen = [&S](CodeGenFunction &CGF, PrePostActionTy &) {
+      OMPPrivateScope PrivateScope(CGF);
+      bool Copyins = CGF.EmitOMPCopyinClause(S);
+      (void)CGF.EmitOMPFirstprivateClause(S, PrivateScope);
+      if (Copyins) {
+        // Emit implicit barrier to synchronize threads and avoid data races on
+        // propagation master's thread values of threadprivate variables to
+        // local instances of that variables of all other implicit threads.
+        CGF.CGM.getOpenMPRuntime().emitBarrierCall(
+            CGF, S.getLocStart(), OMPD_unknown, /*EmitChecks=*/false,
+            /*ForceSimpleCall=*/true);
+      }
+      CGF.EmitOMPPrivateClause(S, PrivateScope);
+      CGF.EmitOMPReductionClauseInit(S, PrivateScope);
+      (void)PrivateScope.Privatize();
+      CGF.EmitStmt(
+          cast<CapturedStmt>(S.getAssociatedStmt())->getCapturedStmt());
+      CGF.EmitOMPReductionClauseFinal(S);
+    };
+    emitCommonOMPParallelDirective(*this, S, OMPD_parallel, CodeGen);
+    emitPostUpdateForReductionClause(
+        *this, S, [](CodeGenFunction &) -> llvm::Value * { return nullptr; });
+  }
 }
 
 void CodeGenFunction::EmitOMPLoopBody(const OMPLoopDirective &D,
@@ -2541,13 +2556,44 @@ void CodeGenFunction::EmitOMPCriticalDirective(const OMPCriticalDirective &S) {
 
 void CodeGenFunction::EmitOMPParallelForDirective(
     const OMPParallelForDirective &S) {
-  // Emit directive as a combined directive that consists of two implicit
-  // directives: 'parallel' with 'for' directive.
-  auto &&CodeGen = [&S](CodeGenFunction &CGF, PrePostActionTy &) {
-    OMPCancelStackRAII CancelRegion(CGF, OMPD_parallel_for, S.hasCancel());
-    CGF.EmitOMPWorksharingLoop(S);
-  };
-  emitCommonOMPParallelDirective(*this, S, OMPD_for, CodeGen);
+  // llvm::errs() << "Loop info: \n";
+
+  // auto Printer = [](ArrayRef<Expr *> Arr, std::string ArrName) {
+  //   llvm::errs() << ArrName << ": \n";
+  //   for (auto *E : Arr) {
+  //     llvm::errs() << "+++++++++ \n";
+  //     E->dump();
+  //   }
+  // };
+
+  // Printer(S.counters(), "counters");
+  // Printer(S.private_counters(), "private counters");
+  // Printer(S.inits(), "inits");
+  // Printer(S.updates(), "updates");
+  // Printer(S.finals(), "finals");
+
+  // Emit PIR for #omp parallel for
+  // The associated statement now is jus the for loop and no captured statement
+  // wraps around it.
+  // Also, note that this far variable accesses are done through load/store
+  // instructions and there are no phis. This should be good because all
+  // variables across the serial/parallel barrier are shared by default through
+  // accessing their pointers.
+  auto *CS = S.getAssociatedStmt();
+  llvm::errs() << ";;;;;;;;;;;;;;;\n";
+  CS->dump();
+  llvm::errs() << ";;;;;;;;;;;;;;;\n";
+  // auto *SS = CS->getCapturedStmt();
+  EmitForStmt(cast<ForStmt>(*CS));
+
+  // // Emit directive as a combined directive that consists of two implicit
+  // // directives: 'parallel' with 'for' directive.
+  // auto &&CodeGen = [&S](CodeGenFunction &CGF, PrePostActionTy &) {
+  //   OMPCancelStackRAII CancelRegion(CGF, OMPD_parallel_for, S.hasCancel());
+  //   CGF.EmitOMPWorksharingLoop(S);
+  // };
+
+  // emitCommonOMPParallelDirective(*this, S, OMPD_for, CodeGen);
 }
 
 void CodeGenFunction::EmitOMPParallelForSimdDirective(

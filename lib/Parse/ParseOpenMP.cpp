@@ -992,11 +992,20 @@ StmtResult Parser::ParseOpenMPDeclarativeOrExecutableDirective(
       // The body is a block scope like in Lambdas and Blocks.
       Sema::CompoundScopeRAII CompoundScope(Actions);
       Actions.ActOnOpenMPRegionStart(DKind, getCurScope());
-      Actions.ActOnStartOfCompoundStmt();
+
+      if (DKind != OMPD_parallel_for) {
+        Actions.ActOnStartOfCompoundStmt();
+      }
+
       // Parse statement
       AssociatedStmt = ParseStatement();
-      Actions.ActOnFinishOfCompoundStmt();
-      AssociatedStmt = Actions.ActOnOpenMPRegionEnd(AssociatedStmt, Clauses);
+      llvm::errs() << "AssociatedStmt before: \n";
+      AssociatedStmt.get()->dump();
+
+      if (DKind != OMPD_parallel_for) {
+        Actions.ActOnFinishOfCompoundStmt();
+        AssociatedStmt = Actions.ActOnOpenMPRegionEnd(AssociatedStmt, Clauses);
+      }
     }
     Directive = Actions.ActOnOpenMPExecutableDirective(
         DKind, DirName, CancelRegion, Clauses, AssociatedStmt.get(), Loc,

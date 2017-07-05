@@ -133,6 +133,9 @@ void CodeGenFunction::EmitIgnoredExpr(const Expr *E) {
     return (void) EmitAnyExpr(E, AggValueSlot::ignored(), true);
 
   // Just emit it as an l-value and drop the result.
+  llvm::errs() << "****************\n";
+  E->dump();
+  llvm::errs() << "****************\n";
   EmitLValue(E);
 }
 
@@ -2127,11 +2130,15 @@ LValue CodeGenFunction::EmitDeclRefLValue(const DeclRefExpr *E) {
       return MakeAddrLValue(Address(Val, Alignment), T, AlignmentSource::Decl);
     }
 
+    llvm::errs() << "== E->refersToEnclosingVariableOrCapture() " <<
+      E->refersToEnclosingVariableOrCapture() << "\n";
+    E->dump();
     // Check for captured variables.
     if (E->refersToEnclosingVariableOrCapture()) {
       if (auto *FD = LambdaCaptureFields.lookup(VD))
         return EmitCapturedFieldLValue(*this, FD, CXXABIThisValue);
       else if (CapturedStmtInfo) {
+        // llvm::errs() << "** CapturedStmtInfo\n";
         auto I = LocalDeclMap.find(VD);
         if (I != LocalDeclMap.end()) {
           if (auto RefTy = VD->getType()->getAs<ReferenceType>())
@@ -2146,6 +2153,7 @@ LValue CodeGenFunction::EmitDeclRefLValue(const DeclRefExpr *E) {
             CapLVal.getType(), AlignmentSource::Decl);
       }
 
+      // CurCodeDecl->dump();
       assert(isa<BlockDecl>(CurCodeDecl));
       Address addr = GetAddrOfBlockDecl(VD, VD->hasAttr<BlocksAttr>());
       return MakeAddrLValue(addr, T, AlignmentSource::Decl);
