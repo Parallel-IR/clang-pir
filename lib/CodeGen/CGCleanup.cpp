@@ -342,8 +342,8 @@ static void ResolveAllBranchFixups(CodeGenFunction &CGF,
     if (Fixup.OptimisticBranchBlock == nullptr) {
       createStoreInstBefore(CGF.Builder.getInt32(Fixup.DestinationIndex),
                             CGF.getNormalCleanupDestSlot(),
-                            Fixup.InitialBranch);
-      Fixup.InitialBranch->setSuccessor(0, CleanupEntry);
+                            Fixup.InitialTerminator);
+      Fixup.InitialTerminator->setSuccessor(0, CleanupEntry);
     }
 
     // Don't add this case to the switch statement twice.
@@ -867,8 +867,8 @@ void CodeGenFunction::PopCleanupBlock(bool FallthroughIsBranchThrough) {
         if (!Fixup.OptimisticBranchBlock) {
           createStoreInstBefore(Builder.getInt32(Fixup.DestinationIndex),
                                 getNormalCleanupDestSlot(),
-                                Fixup.InitialBranch);
-          Fixup.InitialBranch->setSuccessor(0, NormalEntry);
+                                Fixup.InitialTerminator);
+          Fixup.InitialTerminator->setSuccessor(0, NormalEntry);
         }
         Fixup.OptimisticBranchBlock = NormalExit;
       }
@@ -994,15 +994,23 @@ bool CodeGenFunction::isObviouslyBranchWithoutCleanups(JumpDest Dest) const {
 /// be known, in which case this will require a fixup.
 ///
 /// As a side-effect, this method clears the insertion point.
-void CodeGenFunction::EmitBranchThroughCleanup(JumpDest Dest) {
-  assert(Dest.getScopeDepth().encloses(EHStack.stable_begin())
-         && "stale jump destination");
+void CodeGenFunction::EmitBranchThroughCleanup(JumpDest Dest,
+                                               bool IsParallelLoop) {
+  assert(Dest.getScopeDepth().encloses(EHStack.stable_begin()) &&
+         "stale jump destination");
 
   if (!HaveInsertPoint())
     return;
 
   // Create the branch.
-  llvm::BranchInst *BI = Builder.CreateBr(Dest.getBlock());
+  llvm::TerminatorInst *TI = nullptr;
+
+  if (IsParallelLoop) {
+    TI = llvm::HaltInst::Create(Dest.getBlock()->getContext(), Dest.getBlock(),
+                                Builder.GetInsertBlock());
+  } else {
+    TI = Builder.CreateBr(Dest.getBlock());
+  }
 
   // Calculate the innermost active normal cleanup.
   EHScopeStack::stable_iterator
@@ -1023,7 +1031,7 @@ void CodeGenFunction::EmitBranchThroughCleanup(JumpDest Dest) {
     BranchFixup &Fixup = EHStack.addBranchFixup();
     Fixup.Destination = Dest.getBlock();
     Fixup.DestinationIndex = Dest.getDestIndex();
-    Fixup.InitialBranch = BI;
+    Fixup.InitialTerminator = TI;
     Fixup.OptimisticBranchBlock = nullptr;
 
     Builder.ClearInsertionPoint();
@@ -1034,13 +1042,13 @@ void CodeGenFunction::EmitBranchThroughCleanup(JumpDest Dest) {
 
   // Store the index at the start.
   llvm::ConstantInt *Index = Builder.getInt32(Dest.getDestIndex());
-  createStoreInstBefore(Index, getNormalCleanupDestSlot(), BI);
+  createStoreInstBefore(Index, getNormalCleanupDestSlot(), TI);
 
-  // Adjust BI to point to the first cleanup block.
+  // Adjust TI to point to the first cleanup block.
   {
     EHCleanupScope &Scope =
       cast<EHCleanupScope>(*EHStack.find(TopCleanup));
-    BI->setSuccessor(0, CreateNormalEntry(*this, Scope));
+    TI->setSuccessor(0, CreateNormalEntry(*this, Scope));
   }
 
   // Add this destination to all the scopes involved.

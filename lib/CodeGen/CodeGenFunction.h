@@ -767,7 +767,7 @@ public:
   /// EmitBranchThroughCleanup - Emit a branch from the current insert
   /// block through the normal cleanup handling code (if any) and then
   /// on to \arg Dest.
-  void EmitBranchThroughCleanup(JumpDest Dest);
+  void EmitBranchThroughCleanup(JumpDest Dest, bool IsParallelLoop=false);
   
   /// isObviouslyBranchWithoutCleanups - Return true if a branch to the
   /// specified destination obviously has no cleanups to run.  'false' is always
@@ -1022,11 +1022,14 @@ private:
   // BreakContinueStack - This keeps track of where break and continue
   // statements should jump to.
   struct BreakContinue {
-    BreakContinue(JumpDest Break, JumpDest Continue)
-      : BreakBlock(Break), ContinueBlock(Continue) {}
+    BreakContinue(JumpDest Break, JumpDest Continue,
+                  bool IsParallelLoop = false)
+        : BreakBlock(Break), ContinueBlock(Continue),
+          IsParallelLoop(IsParallelLoop) {}
 
     JumpDest BreakBlock;
     JumpDest ContinueBlock;
+    bool IsParallelLoop;
   };
   SmallVector<BreakContinue, 8> BreakContinueStack;
 
@@ -1789,7 +1792,9 @@ public:
   /// branches to the given block and does not expect to emit code into it. This
   /// means the block can be ignored if it is unreachable.
   void EmitBlock(llvm::BasicBlock *BB, bool IsFinished=false);
-
+  void EmitBlock(llvm::BasicBlock *BB,
+                 std::function<void(llvm::BasicBlock *)> EmitTerminator,
+                 bool IsFinished = false);
   /// EmitBlockAfterUses - Emit the given block somewhere hopefully
   /// near its uses, and leave the insertion point in it.
   void EmitBlockAfterUses(llvm::BasicBlock *BB);
@@ -1803,7 +1808,8 @@ public:
   /// calls to this function with calls to Emit*Block prior to generation new
   /// code.
   void EmitBranch(llvm::BasicBlock *Block);
-
+  void EmitHalt(llvm::BasicBlock *Target);
+  void EmitJoin(llvm::BasicBlock *Target);
   /// HaveInsertPoint - True if an insertion point is defined. If not, this
   /// indicates that the current code being emitted is unreachable.
   bool HaveInsertPoint() const {
@@ -2653,6 +2659,7 @@ public:
                                  const RegionCodeGenTy &BodyGen,
                                  const TaskGenTy &TaskGen, OMPTaskDataTy &Data);
 
+  bool CheckOMPParallelRegionForm(const OMPParallelDirective &S);
   void EmitOMPParallelDirective(const OMPParallelDirective &S);
   void EmitOMPSimdDirective(const OMPSimdDirective &S);
   void EmitOMPForDirective(const OMPForDirective &S);
@@ -2662,6 +2669,7 @@ public:
   void EmitOMPSingleDirective(const OMPSingleDirective &S);
   void EmitOMPMasterDirective(const OMPMasterDirective &S);
   void EmitOMPCriticalDirective(const OMPCriticalDirective &S);
+  void EmitPIRForStmt(const ForStmt &S, ArrayRef<const Attr *> Attrs = None);
   void EmitOMPParallelForDirective(const OMPParallelForDirective &S);
   void EmitOMPParallelForSimdDirective(const OMPParallelForSimdDirective &S);
   void EmitOMPParallelSectionsDirective(const OMPParallelSectionsDirective &S);
