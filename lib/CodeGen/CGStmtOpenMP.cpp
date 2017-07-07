@@ -2581,8 +2581,6 @@ void CodeGenFunction::EmitPIRForStmt(const ForStmt &S,
   assert(S.getInc() && "Parallel loops must have an inc expression");
   Continue = getJumpDestInCurrentScope("for.inc");
 
-  // NOTE I should study how break and continue work with OMP loops. For now
-  // I only assume loops don't have any.
   // Store the blocks to use for break and continue.
   BreakContinueStack.push_back(BreakContinue(LoopExit, Continue, true));
 
@@ -2650,17 +2648,23 @@ void CodeGenFunction::EmitPIRForStmt(const ForStmt &S,
   ConditionScope.ForceCleanup();
 
   EmitStopPoint(&S);
-  EmitBranch(CondBlock);
+
+  llvm::BasicBlock *JoinBlock = createBasicBlock("for.join");
+  BoolCondVal = EvaluateExprAsBool(S.getCond());
+  Builder.CreateCondBr(
+                       BoolCondVal, ForkBlock, JoinBlock,
+                       createProfileWeightsForLoop(S.getCond(), getProfileCount(S.getBody())));
 
   ForScope.ForceCleanup();
 
   // LoopStack.pop();
 
+  EmitBlock(JoinBlock);
+
   // Emit the fall-through block.
-  EmitBlock(LoopExit.getBlock(), true);
-  llvm::BasicBlock *PastJoinBlock = createBasicBlock("for.past.join");
-  EmitBlock(PastJoinBlock,
-            std::bind(&CodeGenFunction::EmitJoin, this, std::placeholders::_1));
+  EmitBlock(LoopExit.getBlock(),
+            std::bind(&CodeGenFunction::EmitJoin, this, std::placeholders::_1),
+            true);
 }
 
 void CodeGenFunction::EmitOMPParallelForDirective(
