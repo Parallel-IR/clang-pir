@@ -2584,7 +2584,7 @@ void CodeGenFunction::EmitPIRForStmt(const ForStmt &S,
   // NOTE I should study how break and continue work with OMP loops. For now
   // I only assume loops don't have any.
   // Store the blocks to use for break and continue.
-  BreakContinueStack.push_back(BreakContinue(LoopExit, Continue));
+  BreakContinueStack.push_back(BreakContinue(LoopExit, Continue, true));
 
   // Create a cleanup scope for the condition variable cleanups.
   LexicalScope ConditionScope(*this, S.getSourceRange());

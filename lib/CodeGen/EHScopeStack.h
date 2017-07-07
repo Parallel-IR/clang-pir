@@ -28,6 +28,10 @@ namespace CodeGen {
 
 class CodeGenFunction;
 
+// TODO If this works out well with halt instructions, fix the documentation
+// and rename fields properly to express the fact that halts are to be used
+// in case of parallel regions.
+
 /// A branch fixup.  These are required when emitting a goto to a
 /// label which hasn't been emitted yet.  The goto is optimistically
 /// emitted as a branch to the basic block for the label, and (if it
@@ -49,8 +53,8 @@ struct BranchFixup {
   /// The destination index value.
   unsigned DestinationIndex;
 
-  /// The initial branch of the fixup.
-  llvm::BranchInst *InitialBranch;
+  /// The initial terminator (either br or halt) of the fixup.
+  llvm::TerminatorInst *InitialTerminator;
 };
 
 template <class T> struct InvariantValue {

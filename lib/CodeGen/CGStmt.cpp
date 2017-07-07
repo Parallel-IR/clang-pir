@@ -1185,7 +1185,8 @@ void CodeGenFunction::EmitContinueStmt(const ContinueStmt &S) {
   if (HaveInsertPoint())
     EmitStopPoint(&S);
 
-  EmitBranchThroughCleanup(BreakContinueStack.back().ContinueBlock);
+  EmitBranchThroughCleanup(BreakContinueStack.back().ContinueBlock,
+                           BreakContinueStack.back().IsParallelLoop);
 }
 
 /// EmitCaseStmtRange - If case statement range is not too big then
