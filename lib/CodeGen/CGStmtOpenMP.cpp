@@ -1249,7 +1249,6 @@ static void emitCommonOMPParallelDirective(CodeGenFunction &CGF,
   const CapturedStmt *CS = S.getCapturedStmt(OMPD_parallel);
   auto OutlinedFn = CGF.CGM.getOpenMPRuntime().emitParallelOutlinedFunction(
       S, *CS->getCapturedDecl()->param_begin(), InnermostKind, CodeGen);
-  OutlinedFn->dump();
   if (const auto *NumThreadsClause = S.getSingleClause<OMPNumThreadsClause>()) {
     CodeGenFunction::RunCleanupsScope NumThreadsScope(CGF);
     auto NumThreads = CGF.EmitScalarExpr(NumThreadsClause->getNumThreads(),
@@ -2554,46 +2553,120 @@ void CodeGenFunction::EmitOMPCriticalDirective(const OMPCriticalDirective &S) {
                                             CodeGen, S.getLocStart(), Hint);
 }
 
+void CodeGenFunction::EmitPIRForStmt(const ForStmt &S,
+                                  ArrayRef<const Attr *> ForAttrs) {
+  JumpDest LoopExit = getJumpDestInCurrentScope("for.end");
+
+  LexicalScope ForScope(*this, S.getSourceRange());
+
+  // Evaluate the first part before the loop.
+  assert(S.getInit() && "Parallel loops must have an init expression");
+  EmitStmt(S.getInit());
+
+  // Start the loop with a block that tests the condition.
+  // If there's an increment, the continue scope will be overwritten
+  // later.
+  JumpDest Continue = getJumpDestInCurrentScope("for.cond");
+  llvm::BasicBlock *CondBlock = Continue.getBlock();
+  EmitBlock(CondBlock);
+
+  // const SourceRange &R = S.getSourceRange();
+  // NOTE I am not sure whether I should add PIR loops to the usual loops
+  // stack. For now I will not and will double check how the loop stack is
+  // actually used later.
+  // LoopStack.push(CondBlock, CGM.getContext(), ForAttrs,
+  //                SourceLocToDebugLoc(R.getBegin()),
+  //                SourceLocToDebugLoc(R.getEnd()));
+
+  assert(S.getInc() && "Parallel loops must have an inc expression");
+  Continue = getJumpDestInCurrentScope("for.inc");
+
+  // NOTE I should study how break and continue work with OMP loops. For now
+  // I only assume loops don't have any.
+  // Store the blocks to use for break and continue.
+  BreakContinueStack.push_back(BreakContinue(LoopExit, Continue));
+
+  // Create a cleanup scope for the condition variable cleanups.
+  LexicalScope ConditionScope(*this, S.getSourceRange());
+
+  assert(S.getCond() && "Parallel loops must have a cond expression");
+
+  // NOTE I am not sure what a Condition Variable is syntactically.
+  // If the for statement has a condition scope, emit the local variable
+  // declaration.
+  if (S.getConditionVariable()) {
+    EmitAutoVarDecl(*S.getConditionVariable());
+  }
+
+  llvm::BasicBlock *ExitBlock = LoopExit.getBlock();
+  // If there are any cleanups between here and the loop-exit scope,
+  // create a block to stage a loop exit along.
+  if (ForScope.requiresCleanups())
+    ExitBlock = createBasicBlock("for.cond.cleanup");
+
+  llvm::BasicBlock *ForkBlock = createBasicBlock("for.fork");
+
+  // As long as the condition is true, iterate the loop.
+  llvm::BasicBlock *ForBody = createBasicBlock("for.body");
+
+  // C99 6.8.5p2/p4: The first substatement is executed if the expression
+  // compares unequal to 0.  The condition must be a scalar type.
+  llvm::Value *BoolCondVal = EvaluateExprAsBool(S.getCond());
+  Builder.CreateCondBr(
+      BoolCondVal, ForkBlock, ExitBlock,
+      createProfileWeightsForLoop(S.getCond(), getProfileCount(S.getBody())));
+
+  if (ExitBlock != LoopExit.getBlock()) {
+    // TODO Understand what cleanup is exactly and properly handle joins in
+    // case of cleanups.
+    EmitBlock(ExitBlock);
+    EmitBranchThroughCleanup(LoopExit);
+  }
+
+  EmitBlock(ForkBlock);
+
+  llvm::ForkInst::Create(ForBody, Continue.getBlock(), ForkBlock);
+
+  EmitBlock(ForBody);
+
+  incrementProfileCounter(&S);
+
+  {
+    // Create a separate cleanup scope for the body, in case it is not
+    // a compound statement.
+    RunCleanupsScope BodyScope(*this);
+    // TODO how can we get all terminators in the emitted body so that we can
+    // replace them with halts.
+    EmitStmt(S.getBody());
+  }
+
+  assert(S.getCond() && "Parallel loops must have an inc expression");
+  EmitBlock(Continue.getBlock(),
+            std::bind(&CodeGenFunction::EmitHalt, this, std::placeholders::_1));
+  EmitStmt(S.getInc());
+
+  BreakContinueStack.pop_back();
+
+  ConditionScope.ForceCleanup();
+
+  EmitStopPoint(&S);
+  EmitBranch(CondBlock);
+
+  ForScope.ForceCleanup();
+
+  // LoopStack.pop();
+
+  // Emit the fall-through block.
+  EmitBlock(LoopExit.getBlock(), true);
+  llvm::BasicBlock *PastJoinBlock = createBasicBlock("for.past.join");
+  EmitBlock(PastJoinBlock,
+            std::bind(&CodeGenFunction::EmitJoin, this, std::placeholders::_1));
+}
+
 void CodeGenFunction::EmitOMPParallelForDirective(
     const OMPParallelForDirective &S) {
-  // llvm::errs() << "Loop info: \n";
-
-  // auto Printer = [](ArrayRef<Expr *> Arr, std::string ArrName) {
-  //   llvm::errs() << ArrName << ": \n";
-  //   for (auto *E : Arr) {
-  //     llvm::errs() << "+++++++++ \n";
-  //     E->dump();
-  //   }
-  // };
-
-  // Printer(S.counters(), "counters");
-  // Printer(S.private_counters(), "private counters");
-  // Printer(S.inits(), "inits");
-  // Printer(S.updates(), "updates");
-  // Printer(S.finals(), "finals");
-
-  // Emit PIR for #omp parallel for
-  // The associated statement now is jus the for loop and no captured statement
-  // wraps around it.
-  // Also, note that this far variable accesses are done through load/store
-  // instructions and there are no phis. This should be good because all
-  // variables across the serial/parallel barrier are shared by default through
-  // accessing their pointers.
-  auto *CS = S.getAssociatedStmt();
-  llvm::errs() << ";;;;;;;;;;;;;;;\n";
-  CS->dump();
-  llvm::errs() << ";;;;;;;;;;;;;;;\n";
-  // auto *SS = CS->getCapturedStmt();
-  EmitForStmt(cast<ForStmt>(*CS));
-
-  // // Emit directive as a combined directive that consists of two implicit
-  // // directives: 'parallel' with 'for' directive.
-  // auto &&CodeGen = [&S](CodeGenFunction &CGF, PrePostActionTy &) {
-  //   OMPCancelStackRAII CancelRegion(CGF, OMPD_parallel_for, S.hasCancel());
-  //   CGF.EmitOMPWorksharingLoop(S);
-  // };
-
-  // emitCommonOMPParallelDirective(*this, S, OMPD_for, CodeGen);
+  auto *AS = S.getAssociatedStmt();
+  EmitPIRForStmt(cast<ForStmt>(*AS));
 }
 
 void CodeGenFunction::EmitOMPParallelForSimdDirective(

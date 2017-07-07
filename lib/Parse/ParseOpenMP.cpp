@@ -999,8 +999,6 @@ StmtResult Parser::ParseOpenMPDeclarativeOrExecutableDirective(
 
       // Parse statement
       AssociatedStmt = ParseStatement();
-      llvm::errs() << "AssociatedStmt before: \n";
-      AssociatedStmt.get()->dump();
 
       if (DKind != OMPD_parallel_for) {
         Actions.ActOnFinishOfCompoundStmt();

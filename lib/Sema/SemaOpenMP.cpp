@@ -4684,15 +4684,6 @@ StmtResult Sema::ActOnOpenMPParallelForDirective(
   if (!AStmt)
     return StmtError();
 
-  // The statement now is directly the for loop rather than a CapturedStmt
-  // enclosing it.
-  llvm::errs() << "$$$$$$$$$$$$$$$$$$$\n";
-  AStmt->dump();
-  llvm::errs() << "-------------------\n";
-  // CapturedStmt *CS = cast<CapturedStmt>(AStmt);
-  // CS->dump();
-  // llvm::errs() << "$$$$$$$$$$$$$$$$$$$\n";
-
   // 1.2.2 OpenMP Language Terminology
   // Structured block - An executable statement with a single entry at the
   // top and a single exit at the bottom.

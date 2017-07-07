@@ -453,6 +453,31 @@ void CodeGenFunction::EmitBlock(llvm::BasicBlock *BB, bool IsFinished) {
   Builder.SetInsertPoint(BB);
 }
 
+void CodeGenFunction::EmitBlock(
+    llvm::BasicBlock *BB,
+    std::function<void(llvm::BasicBlock *)> EmitTerminator, bool IsFinished) {
+  llvm::BasicBlock *CurBB = Builder.GetInsertBlock();
+
+  // Fall out of the current block (if necessary).
+  EmitTerminator(BB);
+
+  if (IsFinished && BB->use_empty()) {
+    delete BB;
+    return;
+  }
+
+  // Place the block after the current block, if possible, or else at
+  // the end of the function.
+  if (CurBB && CurBB->getParent())
+    CurFn->getBasicBlockList().insertAfter(CurBB->getIterator(), BB);
+  else
+    CurFn->getBasicBlockList().push_back(BB);
+  Builder.SetInsertPoint(BB);
+}
+
+// TODO There is a lot of shared code between EmitHalt, EmitBranch, and
+// EmitJoin. Combine all in a single EmitTerminator function that handles the
+// common logic and takes a function argument for the actual terminator builder.
 void CodeGenFunction::EmitBranch(llvm::BasicBlock *Target) {
   // Emit a branch from the current block to the target one if this
   // was a real block.  If this was just a fall-through block after a
@@ -470,6 +495,39 @@ void CodeGenFunction::EmitBranch(llvm::BasicBlock *Target) {
   Builder.ClearInsertionPoint();
 }
 
+void CodeGenFunction::EmitHalt(llvm::BasicBlock *Target) {
+  // Emit a branch from the current block to the target one if this
+  // was a real block.  If this was just a fall-through block after a
+  // terminator, don't emit it.
+  llvm::BasicBlock *CurBB = Builder.GetInsertBlock();
+
+  if (!CurBB || CurBB->getTerminator()) {
+    // If there is no insert point or the previous block is already
+    // terminated, don't touch it.
+  } else {
+    // Otherwise, create a fall-through branch.
+    llvm::HaltInst::Create(CurBB->getContext(), Target, CurBB);
+  }
+
+  Builder.ClearInsertionPoint();
+}
+
+void CodeGenFunction::EmitJoin(llvm::BasicBlock *Target) {
+  // Emit a branch from the current block to the target one if this
+  // was a real block.  If this was just a fall-through block after a
+  // terminator, don't emit it.
+  llvm::BasicBlock *CurBB = Builder.GetInsertBlock();
+
+  if (!CurBB || CurBB->getTerminator()) {
+    // If there is no insert point or the previous block is already
+    // terminated, don't touch it.
+  } else {
+    // Otherwise, create a fall-through branch.
+    llvm::JoinInst::Create(Target, CurBB);
+  }
+
+  Builder.ClearInsertionPoint();
+}
 void CodeGenFunction::EmitBlockAfterUses(llvm::BasicBlock *block) {
   bool inserted = false;
   for (llvm::User *u : block->users()) {
@@ -841,8 +899,6 @@ void CodeGenFunction::EmitForStmt(const ForStmt &S,
 
   // Evaluate the first part before the loop.
   if (S.getInit()) {
-    llvm::errs() << "---------------\n";
-    S.getInit()->dump();
     EmitStmt(S.getInit());
   }
 
