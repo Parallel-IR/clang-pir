@@ -2669,7 +2669,7 @@ public:
   void EmitOMPSingleDirective(const OMPSingleDirective &S);
   void EmitOMPMasterDirective(const OMPMasterDirective &S);
   void EmitOMPCriticalDirective(const OMPCriticalDirective &S);
-  void EmitPIRForStmt(const ForStmt &S, ArrayRef<const Attr *> Attrs = None);
+  void EmitPIRForStmt(const OMPParallelForDirective &S, ArrayRef<const Attr *> Attrs = None);
   void EmitOMPParallelForDirective(const OMPParallelForDirective &S);
   void EmitOMPParallelForSimdDirective(const OMPParallelForSimdDirective &S);
   void EmitOMPParallelSectionsDirective(const OMPParallelSectionsDirective &S);

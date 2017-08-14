@@ -1278,12 +1278,10 @@ static void emitCommonOMPParallelDirective(CodeGenFunction &CGF,
 }
 
 bool CodeGenFunction::CheckOMPParallelRegionForm(const OMPParallelDirective &S) {
-  const auto &Parents = getContext().getParents(S);
-  const auto &GrandParents = getContext().getParents(Parents[0]);
+  // const auto &Parents = getContext().getParents(S);
+  // const auto &GrandParents = getContext().getParents(Parents[0]);
 
-  GrandParents[0].get<Stmt>()->dump();
-
-  return true;
+  return false;
 }
 
 void CodeGenFunction::EmitOMPParallelDirective(const OMPParallelDirective &S) {
@@ -2553,8 +2551,9 @@ void CodeGenFunction::EmitOMPCriticalDirective(const OMPCriticalDirective &S) {
                                             CodeGen, S.getLocStart(), Hint);
 }
 
-void CodeGenFunction::EmitPIRForStmt(const ForStmt &S,
+void CodeGenFunction::EmitPIRForStmt(const OMPParallelForDirective &OMPS,
                                   ArrayRef<const Attr *> ForAttrs) {
+  auto &S = cast<ForStmt>(*OMPS.getAssociatedStmt());
   JumpDest LoopExit = getJumpDestInCurrentScope("for.end");
 
   LexicalScope ForScope(*this, S.getSourceRange());
@@ -2602,6 +2601,8 @@ void CodeGenFunction::EmitPIRForStmt(const ForStmt &S,
   if (ForScope.requiresCleanups())
     ExitBlock = createBasicBlock("for.cond.cleanup");
 
+  llvm::BasicBlock *PreForkBlock = createBasicBlock("for.pre.fork");
+
   llvm::BasicBlock *ForkBlock = createBasicBlock("for.fork");
 
   // As long as the condition is true, iterate the loop.
@@ -2611,7 +2612,7 @@ void CodeGenFunction::EmitPIRForStmt(const ForStmt &S,
   // compares unequal to 0.  The condition must be a scalar type.
   llvm::Value *BoolCondVal = EvaluateExprAsBool(S.getCond());
   Builder.CreateCondBr(
-      BoolCondVal, ForkBlock, ExitBlock,
+      BoolCondVal, PreForkBlock, ExitBlock,
       createProfileWeightsForLoop(S.getCond(), getProfileCount(S.getBody())));
 
   if (ExitBlock != LoopExit.getBlock()) {
@@ -2620,6 +2621,18 @@ void CodeGenFunction::EmitPIRForStmt(const ForStmt &S,
     EmitBlock(ExitBlock);
     EmitBranchThroughCleanup(LoopExit);
   }
+
+  EmitBlock(PreForkBlock);
+
+  auto OldInsertPt = AllocaInsertPt;
+  AllocaInsertPt =
+    new llvm::BitCastInst(llvm::UndefValue::get(Builder.getInt32Ty()),
+                      Builder.getInt32Ty(), "allocapt", PreForkBlock);
+  OMPPrivateScope PrivateScope(*this);
+  this->EmitOMPPrivateClause(OMPS, PrivateScope);
+  (void)PrivateScope.Privatize();
+  // AllocaInsertPt->eraseFromParent();
+  AllocaInsertPt = OldInsertPt;
 
   EmitBlock(ForkBlock);
 
@@ -2669,8 +2682,33 @@ void CodeGenFunction::EmitPIRForStmt(const ForStmt &S,
 
 void CodeGenFunction::EmitOMPParallelForDirective(
     const OMPParallelForDirective &S) {
-  auto *AS = S.getAssociatedStmt();
-  EmitPIRForStmt(cast<ForStmt>(*AS));
+  // Two possible approaches to deal with private clauses:
+  //
+  //   1 - Attach metadata to private variables. During code generation,
+  //   check for vars that have that metadata and handle them properly.
+  //   The problem with this is that we need to teach every pass about the
+  //   metadata so that it isn't dropped. Also, this might take us in a road
+  //   that is very specialized for OMP. However, if done properly this would be
+  //   a more general solution than the next one.
+  //
+  //   2 - During codegen, if a variable is detected to be only used inside the
+  //   parallle region; we can deduce that this variable is private. Therefore,
+  //   we can remove its definition from the parent and instead create an alloca
+  //   for it inside the function. However, I don't know how to detect the same
+  //   thing for firstprivate, for example, since there will initialization
+  //   instructions.
+  // OMPPrivateScope LoopScope(*this);
+  // if (EmitOMPFirstprivateClause(S, LoopScope)) {
+  //   // Emit implicit barrier to synchronize threads and avoid data races on
+  //   // initialization of firstprivate variables and post-update of
+  //   // lastprivate variables.
+  //   // CGM.getOpenMPRuntime().emitBarrierCall(*this, S.getLocStart(), OMPD_unknown,
+  //   //                                        /*EmitChecks=*/false,
+  //   //                                        /*ForceSimpleCall=*/true);
+  // }
+  // EmitOMPPrivateClause(S, LoopScope);
+  // (void)LoopScope.Privatize();
+  EmitPIRForStmt(S);
 }
 
 void CodeGenFunction::EmitOMPParallelForSimdDirective(
