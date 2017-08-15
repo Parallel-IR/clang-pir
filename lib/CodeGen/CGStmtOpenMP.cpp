@@ -2179,6 +2179,7 @@ bool CodeGenFunction::EmitOMPWorksharingLoop(const OMPLoopDirective &S) {
         // Emit implicit barrier to synchronize threads and avoid data races on
         // initialization of firstprivate variables and post-update of
         // lastprivate variables.
+        // TODO double check why this is needed here.
         CGM.getOpenMPRuntime().emitBarrierCall(
             *this, S.getLocStart(), OMPD_unknown, /*EmitChecks=*/false,
             /*ForceSimpleCall=*/true);
@@ -2634,6 +2635,7 @@ void CodeGenFunction::EmitPIRForStmt(const OMPParallelForDirective &OMPS,
     }
 
     EmitBlock(PreForkBlock);
+    bool HasLastprivateClause;
 
     {
       OMPPrivateScope PrivateScope(*this);
@@ -2643,6 +2645,7 @@ void CodeGenFunction::EmitPIRForStmt(const OMPParallelForDirective &OMPS,
                                 Builder.getInt32Ty(), "allocapt", PreForkBlock);
       EmitOMPFirstprivateClause(OMPS, PrivateScope);
       EmitOMPPrivateClause(OMPS, PrivateScope);
+      HasLastprivateClause = EmitOMPLastprivateClauseInit(OMPS, PrivateScope);
       (void)PrivateScope.Privatize();
       // AllocaInsertPt->eraseFromParent();
       AllocaInsertPt = OldInsertPt;
@@ -2688,11 +2691,20 @@ void CodeGenFunction::EmitPIRForStmt(const OMPParallelForDirective &OMPS,
 
       EmitBlock(JoinBlock);
 
+      // The for.post.join BB will be used (at least) to support lastprivate
+      // clause logic
+      llvm::BasicBlock *PostJoinBlock = createBasicBlock("for.post.join");
       // Emit the fall-through block.
       EmitBlock(
-          LoopExit.getBlock(),
-          std::bind(&CodeGenFunction::EmitJoin, this, std::placeholders::_1),
-          true);
+          PostJoinBlock,
+          std::bind(&CodeGenFunction::EmitJoin, this, std::placeholders::_1));
+
+      if (HasLastprivateClause) {
+        EmitOMPLastprivateClauseFinal(
+            OMPS, isOpenMPSimdDirective(OMPS.getDirectiveKind()));
+      }
+
+      EmitBlock(LoopExit.getBlock(), true);
     }
   };
   {
