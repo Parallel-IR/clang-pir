@@ -4675,6 +4675,8 @@ void CGOpenMPRuntime::emitInlinedDirective(CodeGenFunction &CGF,
                                            bool HasCancel) {
   if (!CGF.HaveInsertPoint())
     return;
+  // NOTE Removing Region results in a crash due to what I think to be a stack
+  // overflow.
   InlinedOpenMPRegionRAII Region(CGF, CodeGen, InnerKind, HasCancel);
   CGF.CapturedStmtInfo->EmitBody(CGF, /*S=*/nullptr);
 }
