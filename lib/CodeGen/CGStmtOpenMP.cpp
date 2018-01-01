@@ -1239,7 +1239,6 @@ static void emitCommonOMPParallelDirective(
     }
   }
 
-  // NOTE Removing Scope didn't affect the code the get generated.
   OMPParallelScope Scope(CGF, S);
   llvm::SmallVector<llvm::Value *, 16> CapturedVars;
   // Combining 'distribute' with 'for' requires sharing each 'distribute' chunk
@@ -2271,7 +2270,6 @@ bool CodeGenFunction::EmitOMPWorksharingLoop(
         // Emit implicit barrier to synchronize threads and avoid data races on
         // initialization of firstprivate variables and post-update of
         // lastprivate variables.
-        // TODO double check why this is needed here.
         CGM.getOpenMPRuntime().emitBarrierCall(
             *this, S.getLocStart(), OMPD_unknown, /*EmitChecks=*/false,
             /*ForceSimpleCall=*/true);
@@ -2427,7 +2425,6 @@ void CodeGenFunction::EmitOMPForDirective(const OMPForDirective &S) {
                                                  emitDispatchForLoopBounds);
   };
   {
-    // NOTE removing Scope didn't affect the generated code.
     OMPLexicalScope Scope(*this, S, /*AsInlined=*/true);
     CGM.getOpenMPRuntime().emitInlinedDirective(*this, OMPD_for, CodeGen,
                                                 S.hasCancel());
@@ -2690,160 +2687,6 @@ void CodeGenFunction::EmitOMPCriticalDirective(const OMPCriticalDirective &S) {
   CGM.getOpenMPRuntime().emitCriticalRegion(*this,
                                             S.getDirectiveName().getAsString(),
                                             CodeGen, S.getLocStart(), Hint);
-}
-
-void CodeGenFunction::EmitPIRForStmt(const OMPParallelForDirective &OMPS,
-                                     ArrayRef<const Attr *> ForAttrs) {
-  auto &&CodeGen = [&OMPS, this](CodeGenFunction &CGF, PrePostActionTy &) {
-    OMPCancelStackRAII CancelRegion(CGF, OMPD_for, OMPS.hasCancel());
-    auto &CS = cast<CapturedStmt>(*OMPS.getAssociatedStmt());
-    auto &S = *cast<ForStmt>(CS.getCapturedStmt());
-    JumpDest LoopExit = getJumpDestInCurrentScope("for.end");
-
-    LexicalScope ForScope(*this, S.getSourceRange());
-
-    // Evaluate the first part before the loop.
-    assert(S.getInit() && "Parallel loops must have an init expression");
-    EmitStmt(S.getInit());
-
-    // Start the loop with a block that tests the condition.
-    // If there's an increment, the continue scope will be overwritten
-    // later.
-    JumpDest Continue = getJumpDestInCurrentScope("for.cond");
-    llvm::BasicBlock *CondBlock = Continue.getBlock();
-    EmitBlock(CondBlock);
-
-    // const SourceRange &R = S.getSourceRange();
-    // NOTE I am not sure whether I should add PIR loops to the usual loops
-    // stack. For now I will not and will double check how the loop stack is
-    // actually used later.
-    // LoopStack.push(CondBlock, CGM.getContext(), ForAttrs,
-    //                SourceLocToDebugLoc(R.getBegin()),
-    //                SourceLocToDebugLoc(R.getEnd()));
-
-    assert(S.getInc() && "Parallel loops must have an inc expression");
-    Continue = getJumpDestInCurrentScope("for.inc");
-
-    // Store the blocks to use for break and continue.
-    BreakContinueStack.push_back(BreakContinue(LoopExit, Continue, true));
-
-    // Create a cleanup scope for the condition variable cleanups.
-    LexicalScope ConditionScope(*this, S.getSourceRange());
-
-    assert(S.getCond() && "Parallel loops must have a cond expression");
-
-    // NOTE I am not sure what a Condition Variable is syntactically.
-    // If the for statement has a condition scope, emit the local variable
-    // declaration.
-    if (S.getConditionVariable()) {
-      this->EmitAutoVarDecl(*S.getConditionVariable());
-    }
-
-    llvm::BasicBlock *ExitBlock = LoopExit.getBlock();
-    // If there are any cleanups between here and the loop-exit scope,
-    // create a block to stage a loop exit along.
-    if (ForScope.requiresCleanups())
-      ExitBlock = createBasicBlock("for.cond.cleanup");
-
-    llvm::BasicBlock *PreForkBlock = createBasicBlock("for.pre.fork");
-
-    llvm::BasicBlock *ForkBlock = createBasicBlock("for.fork");
-
-    // As long as the condition is true, iterate the loop.
-    llvm::BasicBlock *ForBody = createBasicBlock("for.body");
-
-    // C99 6.8.5p2/p4: The first substatement is executed if the expression
-    // compares unequal to 0.  The condition must be a scalar type.
-    llvm::Value *BoolCondVal = EvaluateExprAsBool(S.getCond());
-    Builder.CreateCondBr(
-        BoolCondVal, PreForkBlock, ExitBlock,
-        createProfileWeightsForLoop(S.getCond(), getProfileCount(S.getBody())));
-
-    if (ExitBlock != LoopExit.getBlock()) {
-      // TODO Understand what cleanup is exactly and properly handle joins in
-      // case of cleanups.
-      EmitBlock(ExitBlock);
-      EmitBranchThroughCleanup(LoopExit);
-    }
-
-    EmitBlock(PreForkBlock);
-    bool HasLastprivateClause;
-
-    {
-      OMPPrivateScope PrivateScope(*this);
-      auto OldInsertPt = AllocaInsertPt;
-      AllocaInsertPt =
-          new llvm::BitCastInst(llvm::UndefValue::get(Builder.getInt32Ty()),
-                                Builder.getInt32Ty(), "allocapt", PreForkBlock);
-      EmitOMPFirstprivateClause(OMPS, PrivateScope);
-      EmitOMPPrivateClause(OMPS, PrivateScope);
-      HasLastprivateClause = EmitOMPLastprivateClauseInit(OMPS, PrivateScope);
-      (void)PrivateScope.Privatize();
-      // AllocaInsertPt->eraseFromParent();
-      AllocaInsertPt = OldInsertPt;
-
-      EmitBlock(ForkBlock);
-
-      llvm::ForkInst::Create(ForBody, Continue.getBlock(), ForkBlock);
-
-      EmitBlock(ForBody);
-
-      incrementProfileCounter(&S);
-
-      {
-        // Create a separate cleanup scope for the body, in case it is not
-        // a compound statement.
-        RunCleanupsScope BodyScope(*this);
-        // TODO how can we get all terminators in the emitted body so that we
-        // can replace them with halts.
-        EmitStmt(S.getBody());
-      }
-
-      assert(S.getCond() && "Parallel loops must have an inc expression");
-      EmitBlock(
-          Continue.getBlock(),
-          std::bind(&CodeGenFunction::EmitHalt, this, std::placeholders::_1));
-      EmitStmt(S.getInc());
-
-      BreakContinueStack.pop_back();
-
-      ConditionScope.ForceCleanup();
-
-      EmitStopPoint(&S);
-
-      llvm::BasicBlock *JoinBlock = createBasicBlock("for.join");
-      BoolCondVal = EvaluateExprAsBool(S.getCond());
-      Builder.CreateCondBr(BoolCondVal, ForkBlock, JoinBlock,
-                           createProfileWeightsForLoop(
-                               S.getCond(), getProfileCount(S.getBody())));
-
-      ForScope.ForceCleanup();
-
-      // LoopStack.pop();
-
-      EmitBlock(JoinBlock);
-
-      // The for.post.join BB will be used (at least) to support lastprivate
-      // clause logic
-      llvm::BasicBlock *PostJoinBlock = createBasicBlock("for.post.join");
-      // Emit the fall-through block.
-      EmitBlock(
-          PostJoinBlock,
-          std::bind(&CodeGenFunction::EmitJoin, this, std::placeholders::_1));
-
-      if (HasLastprivateClause) {
-        EmitOMPLastprivateClauseFinal(
-            OMPS, isOpenMPSimdDirective(OMPS.getDirectiveKind()));
-      }
-
-      EmitBlock(LoopExit.getBlock(), true);
-    }
-  };
-  {
-    OMPLexicalScope Scope(*this, OMPS, true);
-    CGM.getOpenMPRuntime().emitInlinedDirective(*this, OMPD_for, CodeGen,
-                                                false);
-  }
 }
 
 void CodeGenFunction::EmitOMPParallelForDirective(

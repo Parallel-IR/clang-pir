@@ -1082,11 +1082,7 @@ StmtResult Parser::ParseOpenMPDeclarativeOrExecutableDirective(
       // The body is a block scope like in Lambdas and Blocks.
       Sema::CompoundScopeRAII CompoundScope(Actions);
       Actions.ActOnOpenMPRegionStart(DKind, getCurScope());
-
-      // if (DKind != OMPD_parallel_for) {
-        Actions.ActOnStartOfCompoundStmt();
-      // }
-
+      Actions.ActOnStartOfCompoundStmt();
       // Parse statement
       AssociatedStmt = ParseStatement();
       Actions.ActOnFinishOfCompoundStmt();
