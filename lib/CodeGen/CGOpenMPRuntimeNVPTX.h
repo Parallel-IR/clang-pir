@@ -67,12 +67,6 @@ private:
   /// \brief Signal termination of Spmd mode execution.
   void emitSpmdEntryFooter(CodeGenFunction &CGF, EntryFunctionState &EST);
 
-  /// \brief Returns specified OpenMP runtime function for the current OpenMP
-  /// implementation.  Specialized for the NVPTX device.
-  /// \param Function OpenMP runtime function.
-  /// \return Specified function.
-  llvm::Constant *createNVPTXRuntimeFunction(unsigned Function);
-
   //
   // Base class overrides.
   //
@@ -248,7 +242,52 @@ public:
                         ArrayRef<llvm::Value *> CapturedVars,
                         const Expr *IfCond) override;
 
-public:
+  /// Emit a code for reduction clause.
+  ///
+  /// \param Privates List of private copies for original reduction arguments.
+  /// \param LHSExprs List of LHS in \a ReductionOps reduction operations.
+  /// \param RHSExprs List of RHS in \a ReductionOps reduction operations.
+  /// \param ReductionOps List of reduction operations in form 'LHS binop RHS'
+  /// or 'operator binop(LHS, RHS)'.
+  /// \param Options List of options for reduction codegen:
+  ///     WithNowait true if parent directive has also nowait clause, false
+  ///     otherwise.
+  ///     SimpleReduction Emit reduction operation only. Used for omp simd
+  ///     directive on the host.
+  ///     ReductionKind The kind of reduction to perform.
+  virtual void emitReduction(CodeGenFunction &CGF, SourceLocation Loc,
+                             ArrayRef<const Expr *> Privates,
+                             ArrayRef<const Expr *> LHSExprs,
+                             ArrayRef<const Expr *> RHSExprs,
+                             ArrayRef<const Expr *> ReductionOps,
+                             ReductionOptionsTy Options) override;
+
+  /// Returns specified OpenMP runtime function for the current OpenMP
+  /// implementation.  Specialized for the NVPTX device.
+  /// \param Function OpenMP runtime function.
+  /// \return Specified function.
+  llvm::Constant *createNVPTXRuntimeFunction(unsigned Function);
+
+  /// Translates the native parameter of outlined function if this is required
+  /// for target.
+  /// \param FD Field decl from captured record for the paramater.
+  /// \param NativeParam Parameter itself.
+  const VarDecl *translateParameter(const FieldDecl *FD,
+                                    const VarDecl *NativeParam) const override;
+
+  /// Gets the address of the native argument basing on the address of the
+  /// target-specific parameter.
+  /// \param NativeParam Parameter itself.
+  /// \param TargetParam Corresponding target-specific parameter.
+  Address getParameterAddress(CodeGenFunction &CGF, const VarDecl *NativeParam,
+                              const VarDecl *TargetParam) const override;
+
+  /// Emits call of the outlined function with the provided arguments,
+  /// translating these arguments to correct target-specific arguments.
+  void emitOutlinedFunctionCall(
+      CodeGenFunction &CGF, SourceLocation Loc, llvm::Value *OutlinedFn,
+      ArrayRef<llvm::Value *> Args = llvm::None) const override;
+
   /// Target codegen is specialized based on two programming models: the
   /// 'generic' fork-join model of OpenMP, and a more GPU efficient 'spmd'
   /// model for constructs like 'target parallel' that support it.
@@ -266,6 +305,17 @@ private:
   // target region and used by containing directives such as 'parallel'
   // to emit optimized code.
   ExecutionMode CurrentExecutionMode;
+
+  /// Map between an outlined function and its wrapper.
+  llvm::DenseMap<llvm::Function *, llvm::Function *> WrapperFunctionsMap;
+
+  /// Emit function which wraps the outline parallel region
+  /// and controls the parameters which are passed to this function.
+  /// The wrapper ensures that the outlined function is called
+  /// with the correct arguments when data is shared.
+  llvm::Function *
+  createDataSharingWrapper(llvm::Function *OutlinedParallelFn,
+      const OMPExecutableDirective &D);
 };
 
 } // CodeGen namespace.
