@@ -434,10 +434,19 @@ void CodeGenFunction::SimplifyForwardingBlocks(llvm::BasicBlock *BB) {
 }
 
 void CodeGenFunction::EmitBlock(llvm::BasicBlock *BB, bool IsFinished) {
+  EmitBlockTyped<llvm::BranchInst>(BB, IsFinished);
+}
+
+void CodeGenFunction::EmitBlockWithHalt(llvm::BasicBlock *BB, bool IsFinished) {
+  EmitBlockTyped<llvm::HaltInst>(BB, IsFinished);
+}
+
+template <class TermTy>
+void CodeGenFunction::EmitBlockTyped(llvm::BasicBlock *BB, bool IsFinished) {
   llvm::BasicBlock *CurBB = Builder.GetInsertBlock();
 
   // Fall out of the current block (if necessary).
-  EmitBranch(BB);
+  EmitBranchTyped<TermTy>(BB);
 
   if (IsFinished && BB->use_empty()) {
     delete BB;
@@ -454,6 +463,11 @@ void CodeGenFunction::EmitBlock(llvm::BasicBlock *BB, bool IsFinished) {
 }
 
 void CodeGenFunction::EmitBranch(llvm::BasicBlock *Target) {
+  EmitBranchTyped<llvm::BranchInst>(Target);
+}
+
+template <class TermTy>
+void CodeGenFunction::EmitBranchTyped(llvm::BasicBlock *Target) {
   // Emit a branch from the current block to the target one if this
   // was a real block.  If this was just a fall-through block after a
   // terminator, don't emit it.
@@ -464,12 +478,11 @@ void CodeGenFunction::EmitBranch(llvm::BasicBlock *Target) {
     // terminated, don't touch it.
   } else {
     // Otherwise, create a fall-through branch.
-    Builder.CreateBr(Target);
+    Builder.Insert(TermTy::Create(Target));
   }
 
   Builder.ClearInsertionPoint();
 }
-
 void CodeGenFunction::EmitBlockAfterUses(llvm::BasicBlock *block) {
   bool inserted = false;
   for (llvm::User *u : block->users()) {

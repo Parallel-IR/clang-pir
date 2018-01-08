@@ -1857,6 +1857,10 @@ public:
   /// branches to the given block and does not expect to emit code into it. This
   /// means the block can be ignored if it is unreachable.
   void EmitBlock(llvm::BasicBlock *BB, bool IsFinished=false);
+  void EmitBlockWithHalt(llvm::BasicBlock *BB, bool IsFinished=false);
+
+  template <class TermTy>
+  void EmitBlockTyped(llvm::BasicBlock *BB, bool IsFinished=false);
 
   /// EmitBlockAfterUses - Emit the given block somewhere hopefully
   /// near its uses, and leave the insertion point in it.
@@ -1871,6 +1875,9 @@ public:
   /// calls to this function with calls to Emit*Block prior to generation new
   /// code.
   void EmitBranch(llvm::BasicBlock *Block);
+
+  template <class TermTy>
+  void EmitBranchTyped(llvm::BasicBlock *Target);
 
   /// HaveInsertPoint - True if an insertion point is defined. If not, this
   /// indicates that the current code being emitted is unreachable.

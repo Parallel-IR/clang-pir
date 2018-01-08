@@ -1163,6 +1163,12 @@ public:
     return DeclRefExprBits.RefersToEnclosingVariableOrCapture;
   }
 
+  void setRefersToEnclosingVariableOrCapture(
+      bool refersToEnclosingVariableOrCapture) {
+    DeclRefExprBits.RefersToEnclosingVariableOrCapture =
+        refersToEnclosingVariableOrCapture;
+  }
+
   static bool classof(const Stmt *T) {
     return T->getStmtClass() == DeclRefExprClass;
   }

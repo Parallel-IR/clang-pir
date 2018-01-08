@@ -2583,8 +2583,65 @@ void CodeGenFunction::EmitOMPCriticalDirective(const OMPCriticalDirective &S) {
                                             CodeGen, S.getLocStart(), Hint);
 }
 
+#define EMIT_PIR
+
+// TODO Replace with an AST visitor.
+static void UnsetRefersToEnclosingVaraibleOrCapture(Stmt *Stmt) {
+  if (!Stmt) {
+    return;
+  }
+
+  if (DeclRefExpr *Expr = dyn_cast_or_null<DeclRefExpr>(Stmt)) {
+    Expr->setRefersToEnclosingVariableOrCapture(false);
+  }
+
+  for (auto *C : Stmt->children()) {
+    UnsetRefersToEnclosingVaraibleOrCapture(C);
+  }
+}
+
 void CodeGenFunction::EmitOMPParallelForDirective(
     const OMPParallelForDirective &S) {
+
+#if defined(EMIT_PIR)
+
+  auto *Captured = cast<CapturedStmt>(S.getAssociatedStmt());
+
+  auto *For = cast<ForStmt>(Captured->getCapturedStmt());
+  UnsetRefersToEnclosingVaraibleOrCapture(For);
+
+  auto *Init = cast<BinaryOperator>(For->getInit());
+
+  auto *ParForPreHeader = createBasicBlock("par.for.pre.header");
+  auto *ParForHeader = createBasicBlock("par.for.header");
+  auto *ParForBody = createBasicBlock("par.for.body");
+  auto *ParForInc = createBasicBlock("par.for.inc");
+  auto *ParForJoin = createBasicBlock("par.for.join");
+  auto *ParForExit = createBasicBlock("par.for.exit");
+
+  EmitBlock(ParForPreHeader);
+  EmitStmt(Init);
+  auto *PreHeaderCondVal = EvaluateExprAsBool(For->getCond());
+  Builder.CreateCondBr(PreHeaderCondVal, ParForHeader, ParForExit);
+
+  EmitBlock(ParForHeader);
+  Builder.CreateFork(ParForBody, ParForInc);
+
+  EmitBlock(ParForBody);
+  EmitStmt(For->getBody());
+
+  EmitBlockWithHalt(ParForInc);
+  EmitStmt(For->getInc());
+  auto *IncCondVal = EvaluateExprAsBool(For->getCond());
+  Builder.CreateCondBr(IncCondVal, ParForHeader, ParForJoin);
+
+  EmitBlock(ParForJoin);
+  Builder.CreateJoin(ParForExit);
+
+  EmitBlock(ParForExit);
+
+#else
+
   // Emit directive as a combined directive that consists of two implicit
   // directives: 'parallel' with 'for' directive.
   auto &&CodeGen = [&S](CodeGenFunction &CGF, PrePostActionTy &) {
@@ -2594,6 +2651,7 @@ void CodeGenFunction::EmitOMPParallelForDirective(
   };
   emitCommonOMPParallelDirective(*this, S, OMPD_for, CodeGen,
                                  emitEmptyBoundParameters);
+#endif
 }
 
 void CodeGenFunction::EmitOMPParallelForSimdDirective(
