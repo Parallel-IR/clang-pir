@@ -2630,11 +2630,14 @@ void CodeGenFunction::EmitOMPParallelForDirective(
 
   EmitBlock(ParForPrivateAlloca);
   CodeGenFunction::OMPPrivateScope PrivateScope(*this);
+  auto *CapturedStmt = S.getCapturedStmt(OMPD_parallel);
+  CGCapturedStmtRAII CapInfoRAII(
+      *this, new CGCapturedStmtInfo(CapturedRegionKind::CR_Default));
   auto AllocaInsertPtCpy = AllocaInsertPt;
   llvm::Value *Undef = llvm::UndefValue::get(Int32Ty);
   AllocaInsertPt = new llvm::BitCastInst(Undef, Int32Ty, "private.allocapt",
                                          ParForPrivateAlloca);
-
+  EmitOMPFirstprivateClause(S, PrivateScope);
   EmitOMPPrivateClause(S, PrivateScope);
   AllocaInsertPt = AllocaInsertPtCpy;
   Builder.CreateBr(ParForBody);
