@@ -2614,6 +2614,7 @@ void CodeGenFunction::EmitOMPParallelForDirective(
 
   auto *ParForPreHeader = createBasicBlock("par.for.pre.header");
   auto *ParForHeader = createBasicBlock("par.for.header");
+  auto *ParForPrivateAlloca = createBasicBlock("par.for.private.alloca");
   auto *ParForBody = createBasicBlock("par.for.body");
   auto *ParForInc = createBasicBlock("par.for.inc");
   auto *ParForJoin = createBasicBlock("par.for.join");
@@ -2625,7 +2626,18 @@ void CodeGenFunction::EmitOMPParallelForDirective(
   Builder.CreateCondBr(PreHeaderCondVal, ParForHeader, ParForExit);
 
   EmitBlock(ParForHeader);
-  Builder.CreateFork(ParForBody, ParForInc);
+  Builder.CreateFork(ParForPrivateAlloca, ParForInc);
+
+  EmitBlock(ParForPrivateAlloca);
+  CodeGenFunction::OMPPrivateScope PrivateScope(*this);
+  auto AllocaInsertPtCpy = AllocaInsertPt;
+  llvm::Value *Undef = llvm::UndefValue::get(Int32Ty);
+  AllocaInsertPt = new llvm::BitCastInst(Undef, Int32Ty, "private.allocapt",
+                                         ParForPrivateAlloca);
+
+  EmitOMPPrivateClause(S, PrivateScope);
+  AllocaInsertPt = AllocaInsertPtCpy;
+  Builder.CreateBr(ParForBody);
 
   EmitBlock(ParForBody);
   EmitStmt(For->getBody());
