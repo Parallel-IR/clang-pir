@@ -801,13 +801,15 @@ bool CodeGenFunction::EmitOMPLastprivateClauseInit(
       // runtime support library.
       if (AlreadyEmittedVars.insert(OrigVD->getCanonicalDecl()).second) {
         auto *DestVD = cast<VarDecl>(cast<DeclRefExpr>(*IDestRef)->getDecl());
-        PrivateScope.addPrivate(DestVD, [this, OrigVD, IRef]() -> Address {
+        PrivateScope.addPrivate(DestVD, [this, DestVD, OrigVD, IRef]() -> Address {
           DeclRefExpr DRE(
               const_cast<VarDecl *>(OrigVD),
               /*RefersToEnclosingVariableOrCapture=*/CapturedStmtInfo->lookup(
                   OrigVD) != nullptr,
               (*IRef)->getType(), VK_LValue, (*IRef)->getExprLoc());
-          return EmitLValue(&DRE).getAddress();
+          auto Address = EmitLValue(&DRE).getAddress();
+          this->setAddrOfLocalVar(DestVD, Address);
+          return Address;
         });
         // Check if the variable is also a firstprivate: in this case IInit is
         // not generated. Initialization of this variable will happen in codegen
@@ -2616,6 +2618,7 @@ void CodeGenFunction::EmitOMPParallelForDirective(
   auto *ParForHeader = createBasicBlock("par.for.header");
   auto *ParForPrivateAlloca = createBasicBlock("par.for.private.alloca");
   auto *ParForBody = createBasicBlock("par.for.body");
+  auto *ParForLastPrivateCpy = createBasicBlock("par.for.lastprivate.cpy");
   auto *ParForInc = createBasicBlock("par.for.inc");
   auto *ParForJoin = createBasicBlock("par.for.join");
   auto *ParForExit = createBasicBlock("par.for.exit");
@@ -2630,7 +2633,6 @@ void CodeGenFunction::EmitOMPParallelForDirective(
 
   EmitBlock(ParForPrivateAlloca);
   CodeGenFunction::OMPPrivateScope PrivateScope(*this);
-  auto *CapturedStmt = S.getCapturedStmt(OMPD_parallel);
   CGCapturedStmtRAII CapInfoRAII(
       *this, new CGCapturedStmtInfo(CapturedRegionKind::CR_Default));
   auto AllocaInsertPtCpy = AllocaInsertPt;
@@ -2639,11 +2641,16 @@ void CodeGenFunction::EmitOMPParallelForDirective(
                                          ParForPrivateAlloca);
   EmitOMPFirstprivateClause(S, PrivateScope);
   EmitOMPPrivateClause(S, PrivateScope);
+  EmitOMPLastprivateClauseInit(S, PrivateScope);
+  (void)PrivateScope.Privatize();
   AllocaInsertPt = AllocaInsertPtCpy;
   Builder.CreateBr(ParForBody);
 
   EmitBlock(ParForBody);
   EmitStmt(For->getBody());
+
+  EmitBlock(ParForLastPrivateCpy);
+  EmitOMPLastprivateClauseFinal(S, false);
 
   EmitBlockWithHalt(ParForInc);
   EmitStmt(For->getInc());
